@@ -40,11 +40,13 @@ def quadrant_sample(category, max_level=False):
                 answers.append(magnitude)
             else:
                 answers.append(-magnitude)
-        if data.social != 0:
+        elif data.social != 0:
             if social[category](data):
                 answers.append(magnitude)
             else:
                 answers.append(-magnitude)
+        else:
+            answers.append(random.choice([0, 1, 2, 3]))
     answers = (np.array(answers) + 1.5).astype(int).tolist()
     print(answers)
     return answers
@@ -105,7 +107,7 @@ class IdeologySampler:
         i = 0
         while i < self.N:
             # Hack to prevent excessive memory usage by Firefox
-            if i % 11 == 10:
+            if i % 10 == 9:
                 print(f"Sample {i}: restarting driver")
                 self.restart_driver()
             try:
@@ -172,11 +174,14 @@ class IdeologySampler:
             q_df = pd.DataFrame(q_data, columns=["q_id", "q_name", "q_text"])
             df_to_postgres(q_df, "questions", self.conn)
 
-    def quadrant(self, mode, max_level=False):
+
+class QuadrantSampler(IdeologySampler):
+
+    def __call__(self, mode, max_level=False):
         i = 0
         while i < self.N:
             # Hack to prevent excessive memory usage by Firefox
-            if i % 11 == 10:
+            if i % 10 == 9:
                 print(f"Sample {i}: restarting driver")
                 self.restart_driver()
             try:
@@ -198,12 +203,16 @@ if __name__ == "__main__":
     parser.add_argument("--mode")
     parser.add_argument("--max_level", action="store_true", default=False)
     args = parser.parse_args()
-    if args.N is not None:
-        ideology_sampler = IdeologySampler(int(args.N))
+    if args.mode is not None:
+        Sampler = QuadrantSampler
     else:
-        ideology_sampler = IdeologySampler()
+        Sampler = IdeologySampler
+    if args.N is not None:
+        sampler = Sampler(int(args.N))
+    else:
+        sampler = Sampler()
     if args.mode is not None:
         print(args.max_level)
-        ideology_sampler.quadrant(args.mode, args.max_level)
+        sampler(args.mode, args.max_level)
     else:
-        ideology_sampler()
+        sampler()
