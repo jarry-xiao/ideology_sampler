@@ -6,64 +6,14 @@ from IPython.display import display
 import psycopg2
 import numpy as np
 import pandas as pd
+import pandas.io.sql as psql
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LassoCV
+from sklearn.multioutput import MultiOutputRegressor
 
 from utils.db import df_to_postgres
-
-estimated_coefs = pd.read_csv("configs/estimated_coefs.csv")
-
-social = {
-    "libleft": lambda data: data.social < 0,
-    "libright": lambda data: data.social < 0,
-    "authleft": lambda data: data.social > 0,
-    "authright": lambda data: data.social > 0,
-}
-
-economic = {
-    "libleft": lambda data: data.economic < 0,
-    "libright": lambda data: data.economic > 0,
-    "authleft": lambda data: data.economic < 0,
-    "authright": lambda data: data.economic > 0,
-}
-
-
-def quadrant_sample(category, max_level=False):
-    answers = []
-    for i, data in estimated_coefs.iterrows():
-        if max_level:
-            magnitude = 1.5 
-        else:
-            magnitude = random.choice([.5, 1.5])
-        if data.economic != 0:
-            if economic[category](data):
-                answers.append(magnitude)
-            else:
-                answers.append(-magnitude)
-        elif data.social != 0:
-            if social[category](data):
-                answers.append(magnitude)
-            else:
-                answers.append(-magnitude)
-        else:
-            answers.append(random.choice([0, 1, 2, 3]))
-    answers = (np.array(answers) + 1.5).astype(int).tolist()
-    print(answers)
-    return answers
-
-
-def standard_sampler(mode):
-    print(f"Mode: {mode}")
-    distributions = {"normal": [0, 1, 2, 3], "extreme": [0, 3]}
-    def f(q_id):
-        return random.choice(distributions[mode])
-    return f
-
-
-def answer_key(answers):
-    def f(q_id):
-        return answers[q_id]
-    return f
 
 
 class IdeologySampler:
@@ -71,7 +21,7 @@ class IdeologySampler:
     def exit_handler(self):
         self.driver.close()
 
-    def __init__(self, N=10000):
+    def __init__(self, N=1):
         self.N = N
         self.options = Options()    
         self.options.headless = True
@@ -111,10 +61,7 @@ class IdeologySampler:
                 print(f"Sample {i}: restarting driver")
                 self.restart_driver()
             try:
-                modes = ["normal", "extreme"]
-                mode = modes[round(random.random())]
-                f = standard_sampler(mode)
-                self.sample(self.start + i, mode, f)
+                self.sample(self.start + i, "normal", f=lambda q_id: random.choice([0, 1, 2, 3]))
                 i += 1
             except KeyboardInterrupt:
                 break
@@ -161,7 +108,6 @@ class IdeologySampler:
         print(f"\tEconomic: {economic}")
         print()
         df = pd.DataFrame(data, columns=["t_id", "q_id", "value"])
-        display(df)
         success = df_to_postgres(df, "data", self.conn, commit=False)
         if success:
             scores_df = pd.DataFrame(
@@ -177,7 +123,89 @@ class IdeologySampler:
 
 class QuadrantSampler(IdeologySampler):
 
-    def __call__(self, mode, max_level=False):
+    social_categories = {
+        "libleft": lambda data: data.social < 0,
+        "libright": lambda data: data.social < 0,
+        "authleft": lambda data: data.social > 0,
+        "authright": lambda data: data.social > 0,
+    }
+
+    economic_categories = {
+        "libleft": lambda data: data.economic < 0,
+        "libright": lambda data: data.economic > 0,
+        "authleft": lambda data: data.economic < 0,
+        "authright": lambda data: data.economic > 0,
+    }
+
+    def __init__(self, N=1, econ_p=0.5, social_p=0.5):
+        self.e_p = econ_p
+        self.s_p = social_p
+        super().__init__(N)
+        self.estimated_coefs = self.get_coefs()
+
+    def get_coefs(self):
+        data = (
+            psql.read_sql("select * from data order by t_id, q_id limit 62000", self.conn)
+            .pivot(index="t_id", columns="q_id")
+            .value
+        )
+        data = data.replace({0: -2, 1: -1, 2: 1, 3: 2})
+        scores = (
+            psql.read_sql("select * from scores order by t_id limit 1000", self.conn)
+            .set_index("t_id")
+            [["economic", "social"]]
+        )
+        X_train, X_test, y_train, y_test = train_test_split(
+            data, scores, test_size=0.33, random_state=42
+        )
+        lasso = MultiOutputRegressor(LassoCV(cv=5, random_state=42))
+        lasso.fit(X_train, y_train)
+        weights = np.array([lasso.estimators_[0].coef_, lasso.estimators_[1].coef_]).T
+        coefs = (
+            pd.DataFrame(weights, columns=["economic", "social"])
+            .reset_index()
+            .rename(columns={"index": "q_id"})
+        )
+        category = (coefs.economic.abs() - coefs.social.abs()).round(2)
+        coefs["category"] = None 
+        coefs.loc[category >= 0, "category"] = "economic"
+        coefs.loc[category < 0, "category"] = "social"
+        return coefs
+
+    def __get_p(self, p):
+        q = 1 - p
+        return p + random.random() * q
+
+    def __get_magnitudes(self):
+        return random.choice([.5, 1.5])
+
+    def generate_answer_key(self, bias):
+        answers = []
+        # sample a random probability > 0.5
+        econ_p = self.__get_p(self.e_p)
+        social_p = self.__get_p(self.s_p)
+        print(f"P(opposite economic view for trial | {bias}) = {1 - econ_p}")
+        print(f"P(opposite social view for trial | {bias}) = {1 - social_p}")
+        for i, data in self.estimated_coefs.iterrows():
+            magnitude = self.__get_magnitudes()
+            if data.category == "economic":
+                if random.random() > econ_p:
+                    magnitude = -magnitude
+                if self.economic_categories[bias](data):
+                    answers.append(magnitude)
+                else:
+                    answers.append(-magnitude)
+            elif data.category == "social":
+                if random.random() > social_p:
+                    magnitude = -magnitude
+                if self.social_categories[bias](data):
+                    answers.append(magnitude)
+                else:
+                    answers.append(-magnitude)
+        answers = (np.array(answers) + 1.5).astype(int).tolist()
+        return answers
+
+    def __call__(self, bias=None):
         i = 0
         while i < self.N:
             # Hack to prevent excessive memory usage by Firefox
@@ -185,12 +213,16 @@ class QuadrantSampler(IdeologySampler):
                 print(f"Sample {i}: restarting driver")
                 self.restart_driver()
             try:
-                answers = quadrant_sample(mode, max_level=max_level)
-                f = answer_key(answers)
-                self.sample(self.start + i, mode, f)
+                if bias is None:
+                    curr_bias = ["libleft", "libright", "authright", "authleft"][random.randrange(0, 4)]
+                else:
+                    curr_bias = bias
+                answers = self.generate_answer_key(curr_bias)
+                mode = f"quadrant(bias={bias}, e_p={self.e_p}, s_p={self.s_p})"
+                self.sample(self.start + i, mode, f=lambda q_id, a=answers: a[q_id])
                 i += 1
             except KeyboardInterrupt:
-                break
+                break 
             except Exception as e:
                 print(e)
                 print(f"Encountered error on trial {i}, retrying...")
@@ -200,19 +232,25 @@ class QuadrantSampler(IdeologySampler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--N")
-    parser.add_argument("--mode")
-    parser.add_argument("--max_level", action="store_true", default=False)
+    parser.add_argument("--bias")
+    parser.add_argument("--quadrant", action="store_true", default=False)
+    parser.add_argument("--econ_conviction", type=float, default=0.5)
+    parser.add_argument("--soc_conviction", type=float, default=0.5)
     args = parser.parse_args()
-    if args.mode is not None:
-        Sampler = QuadrantSampler
+    has_N = args.N is not None
+    if not args.quadrant:
+        args.bias = None
+        sampler = IdeologySampler() if not has_N else IdeologySampler(N=int(args.N))
     else:
-        Sampler = IdeologySampler
-    if args.N is not None:
-        sampler = Sampler(int(args.N))
-    else:
-        sampler = Sampler()
-    if args.mode is not None:
-        print(args.max_level)
-        sampler(args.mode, args.max_level)
+        kwargs = {
+            "econ_p": args.econ_conviction,
+            "social_p": args.soc_conviction,
+        }
+        if not has_N:
+            sampler = QuadrantSampler(**kwargs)
+        else:
+            sampler = QuadrantSampler(N=int(args.N), **kwargs)
+    if args.bias is not None:
+        sampler(bias=args.bias)
     else:
         sampler()
