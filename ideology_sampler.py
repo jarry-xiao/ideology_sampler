@@ -70,7 +70,7 @@ class IdeologySampler:
                 print(f"Encountered error on trial {i}, retrying...")
                 continue
 
-    def sample(self, t_id, mode, f):
+    def sample(self, t_id, mode, f, write=True):
         self.reset()
         print(f"Loading data for trial {t_id}")
         q_data = []
@@ -108,17 +108,18 @@ class IdeologySampler:
         print(f"\tEconomic: {economic}")
         print()
         df = pd.DataFrame(data, columns=["t_id", "q_id", "value"])
-        success = df_to_postgres(df, "data", self.conn, commit=False)
-        if success:
-            scores_df = pd.DataFrame(
-                [[t_id, economic, social, mode]],
-                columns=["t_id", "economic", "social", "mode"]
-            )
-            display(scores_df)
-            df_to_postgres(scores_df, "scores", self.conn)
-        if self.load_questions:
-            q_df = pd.DataFrame(q_data, columns=["q_id", "q_name", "q_text"])
-            df_to_postgres(q_df, "questions", self.conn)
+        scores_df = pd.DataFrame(
+            [[t_id, economic, social, mode]],
+            columns=["t_id", "economic", "social", "mode"]
+        )
+        display(scores_df)
+        if write:
+            success = df_to_postgres(df, "data", self.conn, commit=False)
+            if success:
+                df_to_postgres(scores_df, "scores", self.conn)
+            if self.load_questions:
+                q_df = pd.DataFrame(q_data, columns=["q_id", "q_name", "q_text"])
+                df_to_postgres(q_df, "questions", self.conn)
 
 
 class QuadrantSampler(IdeologySampler):
