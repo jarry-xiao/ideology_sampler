@@ -191,7 +191,7 @@ class QuadrantSampler(IdeologySampler):
         return p + random.random() * q
 
     def __get_magnitudes(self, p):
-        i = int(random.random())
+        i = int(random.random() < p)
         return [.5, 1.5][i]
 
     def generate_answer_key(self, bias):
@@ -207,17 +207,19 @@ class QuadrantSampler(IdeologySampler):
         print(f"Social conviction: {social_conviction}")
         for i, data in self.estimated_coefs.iterrows():
             if data.category == "economic":
-                magnitude = self.__get_magnitudes(econ_conviction)
                 if random.random() > econ_p:
-                    magnitude = -magnitude
+                    magnitude = -self.__get_magnitudes(1-econ_conviction)
+                else:
+                    magnitude = self.__get_magnitudes(econ_conviction)
                 if self.economic_categories[bias](data):
                     answers.append(magnitude)
                 else:
                     answers.append(-magnitude)
             elif data.category == "social":
-                magnitude = self.__get_magnitudes(social_conviction)
                 if random.random() > social_p:
-                    magnitude = -magnitude
+                    magnitude = -self.__get_magnitudes(1-social_conviction)
+                else:
+                    magnitude = self.__get_magnitudes(social_conviction)
                 if self.social_categories[bias](data):
                     answers.append(magnitude)
                 else:
