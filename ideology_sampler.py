@@ -138,9 +138,22 @@ class QuadrantSampler(IdeologySampler):
         "authright": lambda data: data.economic > 0,
     }
 
-    def __init__(self, N=1, econ_p=0.5, social_p=0.5):
+    def __init__(
+        self,
+        N=1,
+        econ_p=0.5,
+        social_p=0.5,
+        e_p_min=0.0,
+        e_p_max=1.0,
+        s_p_min=0.0,
+        s_p_max=1.0,
+        mode=None,
+    ):
         self.e_p = econ_p
         self.s_p = social_p
+        self.e_range = [e_p_min, e_p_max]
+        self.s_range = [s_p_min, s_p_max]
+        self.mode = mode
         super().__init__(N)
         self.estimated_coefs = self.get_coefs()
 
@@ -177,19 +190,24 @@ class QuadrantSampler(IdeologySampler):
         q = 1 - p
         return p + random.random() * q
 
-    def __get_magnitudes(self):
-        return random.choice([.5, 1.5])
+    def __get_magnitudes(self, p):
+        i = int(random.random())
+        return [.5, 1.5][i]
 
     def generate_answer_key(self, bias):
         answers = []
         # sample a random probability > 0.5
         econ_p = self.__get_p(self.e_p)
         social_p = self.__get_p(self.s_p)
+        econ_conviction = random.uniform(*self.e_range)
+        social_conviction = random.uniform(*self.s_range)
         print(f"P(opposite economic view for trial | {bias}) = {1 - econ_p}")
         print(f"P(opposite social view for trial | {bias}) = {1 - social_p}")
+        print(f"Economic conviction: {econ_conviction}")
+        print(f"Social conviction: {social_conviction}")
         for i, data in self.estimated_coefs.iterrows():
-            magnitude = self.__get_magnitudes()
             if data.category == "economic":
+                magnitude = self.__get_magnitudes(econ_conviction)
                 if random.random() > econ_p:
                     magnitude = -magnitude
                 if self.economic_categories[bias](data):
@@ -197,6 +215,7 @@ class QuadrantSampler(IdeologySampler):
                 else:
                     answers.append(-magnitude)
             elif data.category == "social":
+                magnitude = self.__get_magnitudes(social_conviction)
                 if random.random() > social_p:
                     magnitude = -magnitude
                 if self.social_categories[bias](data):
@@ -219,7 +238,10 @@ class QuadrantSampler(IdeologySampler):
                 else:
                     curr_bias = bias
                 answers = self.generate_answer_key(curr_bias)
-                mode = f"quadrant(bias={bias}, e_p={self.e_p}, s_p={self.s_p})"
+                if not self.mode: 
+                    mode = f"quadrant(bias={bias}, e_p={self.e_p}, s_p={self.s_p})"
+                else:
+                    mode = self.mode
                 self.sample(self.start + i, mode, f=lambda q_id, a=answers: a[q_id])
                 i += 1
             except KeyboardInterrupt:
@@ -237,6 +259,11 @@ if __name__ == "__main__":
     parser.add_argument("--quadrant", action="store_true", default=False)
     parser.add_argument("--econ_conviction", type=float, default=0.5)
     parser.add_argument("--soc_conviction", type=float, default=0.5)
+    parser.add_argument("--e_p_min", type=float, default=0.0)
+    parser.add_argument("--e_p_max", type=float, default=1.0)
+    parser.add_argument("--s_p_min", type=float, default=0.0)
+    parser.add_argument("--s_p_max", type=float, default=1.0)
+    parser.add_argument("--mode")
     args = parser.parse_args()
     has_N = args.N is not None
     if not args.quadrant:
@@ -245,7 +272,12 @@ if __name__ == "__main__":
     else:
         kwargs = {
             "econ_p": args.econ_conviction,
+            "e_p_min": args.e_p_min,
+            "e_p_max": args.e_p_max,
             "social_p": args.soc_conviction,
+            "s_p_min": args.s_p_min,
+            "s_p_max": args.s_p_max,
+            "mode": args.mode,
         }
         if not has_N:
             sampler = QuadrantSampler(**kwargs)
